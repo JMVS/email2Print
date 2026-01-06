@@ -105,8 +105,28 @@ def process_email(msg):
     subject = decode_mime_words(msg.get("Subject", "(No Subject)"))
     printed_files = []
 
-    if ALLOWED_RECIPIENTS and from_addr not in ALLOWED_RECIPIENTS:
-        logger.warning(f"Sender {from_addr} not in ALLOWED_RECIPIENTS. Skipping print.")
+    # OG
+    #if ALLOWED_RECIPIENTS and from_addr not in ALLOWED_RECIPIENTS:
+    #    logger.warning(f"Sender {from_addr} not in ALLOWED_RECIPIENTS. Skipping print.")
+    #    return
+
+    # Allow both individual recipients and global domains. 
+    # Added option to allow all if list is blank
+    is_allowed = False
+    if not ALLOWED_RECIPIENTS:
+        is_allowed = False  # If list is empty, deny all (change to True to allow all)
+    else:
+        # 1. Check for allowed recipients
+        if from_addr in ALLOWED_RECIPIENTS:
+            is_allowed = True
+        else:
+        # 2. Check for allowed domain (ej: @domain.com)
+            sender_domain = "@" + from_addr.split("@")[-1]
+            if sender_domain in ALLOWED_RECIPIENTS:
+                is_allowed = True
+
+    if not is_allowed:
+        logger.warning(f"Sender {from_addr} not in ALLOWED_RECIPIENTS (nor domain match). Skipping print.")
         return
 
     log_stream = io.StringIO()
