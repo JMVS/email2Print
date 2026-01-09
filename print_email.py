@@ -11,6 +11,7 @@ from email.message import EmailMessage
 from email.header import decode_header
 from logging.handlers import RotatingFileHandler
 import io
+from translations import get_translation, get_available_languages
 
 # Logging setup with rotation to prevent unbounded log growth
 log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -32,7 +33,7 @@ def get_env_var(name, required=False, default=None):
     val = os.getenv(name)
     if val is None or val == "":
         if required:
-            logger.error(f"Missing required environment variable: {name}")
+            logger.error(get_translation("missing_env_var", LANGUAGE, var=name))
             raise ValueError(f"Missing required environment variable: {name}")
         return default
     return val
@@ -54,7 +55,7 @@ IMAP_PORT = int(get_env_var("IMAP_PORT", default=993))
 PRINTER_NAME = get_env_var("PRINTER_NAME", required=True)
 
 SLEEP_TIME = int(get_env_var("SLEEP_TIME", default=60))
-CONFIRM_SUBJECT = get_env_var("CONFIRM_SUBJECT", default="Your Print Job Confirmation")
+CONFIRM_SUBJECT = get_env_var("CONFIRM_SUBJECT", default=None)  # Will use translation if not set
 ALLOWED_ATTACHMENT_TYPES = [ext.strip().lower() for ext in get_env_var("ALLOWED_ATTACHMENT_TYPES", default="").split(",") if ext]
 ALLOWED_RECIPIENTS = [addr.strip().lower() for addr in get_env_var("ALLOWED_RECIPIENTS", default="").split(",") if addr]
 DETAILED_CONFIRMATION = get_env_var("DETAILED_CONFIRMATION", default="false").lower() == "true"
@@ -67,6 +68,12 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 # Connection retry settings for IMAP resilience
 MAX_IMAP_RETRIES = int(get_env_var("MAX_IMAP_RETRIES", default=3))
 IMAP_RETRY_DELAY = int(get_env_var("IMAP_RETRY_DELAY", default=5))
+
+# Language setting - supports any language code in translations.py
+LANGUAGE = get_env_var("LANGUAGE", default="en").lower()
+if LANGUAGE not in get_available_languages():
+    logger.warning(f"Language '{LANGUAGE}' not available. Falling back to 'en'. Available: {get_available_languages()}")
+    LANGUAGE = "en"
 
 
 def decode_mime_words(s):
@@ -84,36 +91,40 @@ def is_mostly_html_blank(html):
 def print_file(file_path):
     try:
         subprocess.run(["lp", "-d", PRINTER_NAME, file_path], check=True)
-        logger.info(f"Sent to printer: {PRINTER_NAME} - File: {file_path}")
+        logger.info(get_translation("sent_to_printer", LANGUAGE, printer=PRINTER_NAME, path=file_path))
         return True
     except subprocess.CalledProcessError as e:
-        logger.error(f"Printing failed for {file_path}: {e}")
+        logger.error(get_translation("printing_failed", LANGUAGE, path=file_path, error=str(e)))
         return False
 
 def send_confirmation_email(to_email, log_text, printed_files):
     msg = EmailMessage()
-    msg["Subject"] = CONFIRM_SUBJECT
+    # Use custom subject or translated default
+    msg["Subject"] = CONFIRM_SUBJECT or get_translation("confirmation_subject_default", LANGUAGE)
     msg["From"] = FROM_ADDRESS
     msg["To"] = to_email
 
     if DETAILED_CONFIRMATION:
-        msg.set_content(f"Your print job was processed:\n\n{log_text}")
+        msg.set_content(get_translation("confirmation_processed", LANGUAGE, log=log_text))
     else:
         lines = [
-            f"{time.strftime('%Y-%m-%d %H:%M:%S')} – Your file '{fname}' was printed on printer '{PRINTER_NAME}'"
+            get_translation("confirmation_printed", LANGUAGE, 
+                          timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+                          filename=fname,
+                          printer=PRINTER_NAME)
             for fname in printed_files
         ]
-        msg.set_content("\n".join(lines) if lines else "No files were printed.")
+        msg.set_content("\n".join(lines) if lines else get_translation("confirmation_no_files", LANGUAGE))
 
     try:
-        logger.info(f"Sending confirmation email to {to_email}")
+        logger.info(get_translation("sending_confirmation", LANGUAGE, email=to_email))
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(msg)
-        logger.info("Confirmation email sent.")
+        logger.info(get_translation("confirmation_sent", LANGUAGE))
     except Exception as e:
-        logger.error(f"Error sending confirmation email: {e}")
+        logger.error(get_translation("confirmation_failed", LANGUAGE, error=str(e)))
 
 def extract_sender(msg):
     """Extract and normalize sender email address"""
@@ -126,7 +137,7 @@ def is_sender_allowed(from_addr):
     If list is empty, denies all (security by default).
     """
     if not ALLOWED_RECIPIENTS:
-        logger.warning(f"ALLOWED_RECIPIENTS is empty. Denying sender: {from_addr}")
+        logger.warning(get_translation("allowed_recipients_empty", LANGUAGE, sender=from_addr))
         return False
     
     # Check for exact email match
@@ -149,22 +160,28 @@ def print_content(payload, suffix, description):
     """
     # Security: Check payload size before processing
     if len(payload) > MAX_FILE_SIZE_BYTES:
-        logger.warning(f"{description} exceeds max size ({MAX_FILE_SIZE_MB}MB). Skipping.")
+        logger.warning(get_translation("file_exceeds_size", LANGUAGE, 
+                                      description=description, 
+                                      mb=MAX_FILE_SIZE_MB))
         return False, None
     
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{suffix}") as tmpfile:
         tmpfile.write(payload)
         tmpfile_path = tmpfile.name
     
-    logger.info(f"Printing {description}: {tmpfile_path}")
+    logger.info(get_translation("printing_body" if "body" in description.lower() else "printing_attachment",
+                               LANGUAGE,
+                               filename=description,
+                               content_type=suffix,
+                               path=tmpfile_path))
     success = print_file(tmpfile_path)
     
     # Always clean up temp file
     try:
         os.remove(tmpfile_path)
-        logger.info(f"Deleted temporary file: {tmpfile_path}")
+        logger.info(get_translation("deleted_temp_file", LANGUAGE, path=tmpfile_path))
     except Exception as e:
-        logger.error(f"Failed to delete temp file {tmpfile_path}: {e}")
+        logger.error(get_translation("failed_delete_temp", LANGUAGE, path=tmpfile_path, error=str(e)))
     
     return success, tmpfile_path
 
@@ -175,7 +192,7 @@ def process_email(msg):
     
     # Security: Validate sender BEFORE processing any content
     if not is_sender_allowed(from_addr):
-        logger.warning(f"Sender {from_addr} not in ALLOWED_RECIPIENTS (nor domain match). Skipping print.")
+        logger.warning(get_translation("sender_not_allowed", LANGUAGE, sender=from_addr))
         return
 
     printed_files = []
@@ -185,8 +202,8 @@ def process_email(msg):
     stream_handler.setFormatter(log_formatter)
     logger.addHandler(stream_handler)
 
-    logger.info(f"Processing email from: {from_addr}")
-    logger.info(f"Subject: {subject}")
+    logger.info(get_translation("processing_email", LANGUAGE, sender=from_addr))
+    logger.info(get_translation("email_subject", LANGUAGE, subject=subject))
     printed_any = False
 
     # Detect if there are attachments
@@ -204,7 +221,7 @@ def process_email(msg):
                 break
     
     if has_valid_attachments:
-        logger.info("Valid attachments found. Email body will be SKIPPED.")
+        logger.info(get_translation("valid_attachments_found", LANGUAGE))
 
     for part in msg.walk():
         content_type = part.get_content_type()
@@ -213,7 +230,12 @@ def process_email(msg):
 
         # Skip empty payloads early
         if not payload or payload.strip() == b"":
-            logger.warning(f"{'Attachment' if filename else 'Email body'} ({content_type}) is empty. Skipping print.")
+            if filename:
+                logger.warning(get_translation("attachment_empty", LANGUAGE, 
+                                             filename=decode_mime_words(filename),
+                                             content_type=content_type))
+            else:
+                logger.warning(get_translation("body_empty", LANGUAGE, content_type=content_type))
             continue
 
         if filename:
@@ -221,7 +243,9 @@ def process_email(msg):
             suffix = os.path.splitext(filename)[1].lower().lstrip(".")
 
             if ALLOWED_ATTACHMENT_TYPES and suffix not in ALLOWED_ATTACHMENT_TYPES:
-                logger.warning(f"Attachment '{filename}' type .{suffix} not allowed. Skipping.")
+                logger.warning(get_translation("attachment_not_allowed", LANGUAGE, 
+                                             filename=filename, 
+                                             ext=suffix))
                 continue
 
             # Use unified print function
@@ -236,7 +260,7 @@ def process_email(msg):
                 continue
             
             if content_type == "text/html" and is_mostly_html_blank(payload.decode(errors="ignore")):
-                logger.warning(f"HTML email body is blank after stripping tags. Skipping.")
+                logger.warning(get_translation("html_blank", LANGUAGE))
                 continue
 
             # Use unified print function
@@ -246,7 +270,7 @@ def process_email(msg):
                 printed_files.append(f"EmailBody-{content_type}")
 
     if not printed_any:
-        logger.warning("No printable content found in this email.")
+        logger.warning(get_translation("no_printable_content", LANGUAGE))
 
     stream_handler.flush()
     logger.removeHandler(stream_handler)
@@ -260,24 +284,26 @@ def connect_imap_with_retry():
     """
     for attempt in range(MAX_IMAP_RETRIES):
         try:
-            logger.info(f"Connecting to IMAP server (attempt {attempt + 1}/{MAX_IMAP_RETRIES})")
+            logger.info(get_translation("connecting_imap", LANGUAGE, 
+                                       attempt=attempt + 1, 
+                                       max_attempts=MAX_IMAP_RETRIES))
             client = imapclient.IMAPClient(IMAP_SERVER, ssl=True, port=IMAP_PORT)
             client.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
-            logger.info("IMAP connection established successfully")
+            logger.info(get_translation("imap_connected", LANGUAGE))
             return client
         except Exception as e:
-            logger.error(f"IMAP connection attempt {attempt + 1} failed: {e}")
+            logger.error(get_translation("imap_failed", LANGUAGE, attempt=attempt + 1, error=str(e)))
             if attempt == MAX_IMAP_RETRIES - 1:
-                logger.error("Max IMAP connection retries reached. Raising exception.")
+                logger.error(get_translation("max_retries_reached", LANGUAGE))
                 raise
             # Exponential backoff
             delay = IMAP_RETRY_DELAY * (attempt + 1)
-            logger.info(f"Retrying in {delay} seconds...")
+            logger.info(get_translation("retrying_in", LANGUAGE, seconds=delay))
             time.sleep(delay)
 
 def main_loop():
     """Main processing loop with error handling and reconnection logic"""
-    logger.info("Starting email2print script")
+    logger.info(get_translation("starting_script", LANGUAGE))
     
     while True:
         try:
@@ -285,7 +311,7 @@ def main_loop():
             with connect_imap_with_retry() as client:
                 client.select_folder("INBOX")
                 messages = client.search(["UNSEEN"])
-                logger.info(f"Found {len(messages)} unseen messages")
+                logger.info(get_translation("found_messages", LANGUAGE, count=len(messages)))
 
                 if messages:
                     for uid, msg_data in client.fetch(messages, "RFC822").items():
@@ -296,28 +322,28 @@ def main_loop():
                         # Mark as seen or deletion
                         if DELETE_AFTER_PRINT:
                             client.delete_messages(uid)
-                            logger.info(f"Email {uid} marked for deletion.")
+                            logger.info(get_translation("email_marked_deletion", LANGUAGE, uid=uid))
                         else:
                             client.add_flags(uid, [b"\\Seen"])
                     
                     # Delete (expunge) marked mails
                     if DELETE_AFTER_PRINT:
                         client.expunge()
-                        logger.info("Deleted messages expunged from server.")
+                        logger.info(get_translation("messages_expunged", LANGUAGE))
                 else:
-                    logger.info("No new messages.")
+                    logger.info(get_translation("no_new_messages", LANGUAGE))
                     
         except Exception as e:
-            logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
+            logger.error(get_translation("unexpected_error", LANGUAGE, error=str(e)), exc_info=True)
             # Continue running even after errors
 
-        logger.info(f"Sleeping {SLEEP_TIME}s...")
+        logger.info(get_translation("sleeping", LANGUAGE, seconds=SLEEP_TIME))
         time.sleep(SLEEP_TIME)
 
 if __name__ == "__main__":
-    print(f"Monitoring inbox: {EMAIL_ACCOUNT}")
-    print(f"Printing to printer: {PRINTER_NAME}")
-    print(f"Scan interval: {SLEEP_TIME} seconds")
-    print(f"Max file size: {MAX_FILE_SIZE_MB} MB")
-    logger.info(f"Starting email2print with inbox: {EMAIL_ACCOUNT}, printer: {PRINTER_NAME}, scan interval: {SLEEP_TIME}s, max file size: {MAX_FILE_SIZE_MB}MB")
+    print(get_translation("monitoring_inbox", LANGUAGE, email=EMAIL_ACCOUNT))
+    print(get_translation("printing_to", LANGUAGE, printer=PRINTER_NAME))
+    print(get_translation("scan_interval", LANGUAGE, seconds=SLEEP_TIME))
+    print(get_translation("max_file_size", LANGUAGE, mb=MAX_FILE_SIZE_MB))
+    logger.info(f"Language: {LANGUAGE}")
     main_loop()
