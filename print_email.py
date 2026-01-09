@@ -53,6 +53,7 @@ CONFIRM_SUBJECT = get_env_var("CONFIRM_SUBJECT", default="Your Print Job Confirm
 ALLOWED_ATTACHMENT_TYPES = [ext.strip().lower() for ext in get_env_var("ALLOWED_ATTACHMENT_TYPES", default="").split(",") if ext]
 ALLOWED_RECIPIENTS = [addr.strip().lower() for addr in get_env_var("ALLOWED_RECIPIENTS", default="").split(",") if addr]
 DETAILED_CONFIRMATION = get_env_var("DETAILED_CONFIRMATION", default="false").lower() == "true"
+DELETE_AFTER_PRINT = get_env_var("DELETE_AFTER_PRINT", default="false").lower() == "true"
 
 def decode_mime_words(s):
     if not s:
@@ -224,7 +225,16 @@ def main_loop():
                         raw_email = msg_data[b"RFC822"]
                         msg = email.message_from_bytes(raw_email)
                         process_email(msg)
-                        client.add_flags(uid, [b"\\Seen"])
+                        # Mark as seen or deletion
+                        if DELETE_AFTER_PRINT:
+                            client.delete_messages(uid)
+                            logger.info(f"Email {uid} marked for deletion.")
+                        else:
+                            client.add_flags(uid, [b"\\Seen"])
+                    # Delete (expunge) marked mails
+                    if DELETE_AFTER_PRINT:
+                        client.expunge()
+                        logger.info("Deleted messages expunged from server.")
                 else:
                     logger.info("No new messages.")
         except Exception as e:
