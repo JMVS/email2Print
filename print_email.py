@@ -138,6 +138,22 @@ def process_email(msg):
     logger.info(f"Subject: {subject}")
     printed_any = False
 
+    # Detect if there are attachments
+    # This is to prevent printing the email body if not really needed
+    has_valid_attachments = False
+    for part in msg.walk():
+        if part.get_content_maintype() == 'multipart': continue
+        if part.get_filename(): # Tiene nombre de archivo
+            fname = decode_mime_words(part.get_filename())
+            ext = os.path.splitext(fname)[1].lower().lstrip(".")
+            # Verificamos si la extensión está permitida
+            if not ALLOWED_ATTACHMENT_TYPES or ext in ALLOWED_ATTACHMENT_TYPES:
+                has_valid_attachments = True
+                break
+    
+    if has_valid_attachments:
+        logger.info("Valid attachments found. Email body will be SKIPPED.")
+
     for part in msg.walk():
         content_type = part.get_content_type()
         filename = part.get_filename()
@@ -167,6 +183,9 @@ def process_email(msg):
             logger.info(f"Deleted temporary file: {tmpfile_path}")
 
         elif content_type in ["text/plain", "text/html"]:
+            # Prevent printing body if the email has attachments
+            if has_valid_attachments:
+                continue
             if content_type == "text/html" and is_mostly_html_blank(payload.decode(errors="ignore")):
                 logger.warning(f"HTML email body is blank after stripping tags. Skipping.")
                 continue
