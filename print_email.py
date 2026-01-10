@@ -88,11 +88,91 @@ def is_mostly_html_blank(html):
     cleaned = re.sub(r"<[^>]+>", "", html or "").strip()
     return cleaned == ""
 
-def print_file(file_path):
+# File types that require conversion through LibreOffice before printing
+LIBREOFFICE_FORMATS = {
+    'doc', 'docx', 'odt', 'rtf',           # Word processors
+    'xls', 'xlsx', 'ods', 'csv',           # Spreadsheets
+    'ppt', 'pptx', 'odp',                  # Presentations
+    'html', 'htm'                           # HTML (better rendering)
+}
+
+def convert_with_libreoffice(input_path, output_dir):
+    """
+    Convert document to PDF using LibreOffice headless mode.
+    Returns path to converted PDF or None if conversion fails.
+    """
     try:
-        subprocess.run(["lp", "-d", PRINTER_NAME, file_path], check=True)
-        logger.info(get_translation("sent_to_printer", LANGUAGE, printer=PRINTER_NAME, path=file_path))
+        # Use LibreOffice in headless mode to convert to PDF
+        result = subprocess.run([
+            "libreoffice",
+            "--headless",
+            "--convert-to", "pdf",
+            "--outdir", output_dir,
+            input_path
+        ], check=True, capture_output=True, text=True, timeout=30)
+        
+        # Calculate expected output filename
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
+        
+        if os.path.exists(pdf_path):
+            logger.info(get_translation("libreoffice_conversion_success", LANGUAGE, 
+                                       input=input_path, output=pdf_path))
+            return pdf_path
+        else:
+            logger.error(get_translation("libreoffice_conversion_failed", LANGUAGE, path=pdf_path))
+            return None
+            
+    except subprocess.TimeoutExpired:
+        logger.error(get_translation("libreoffice_timeout", LANGUAGE, path=input_path))
+        return None
+    except subprocess.CalledProcessError as e:
+        logger.error(get_translation("libreoffice_error", LANGUAGE, path=input_path, error=e.stderr))
+        return None
+    except Exception as e:
+        logger.error(get_translation("libreoffice_unexpected_error", LANGUAGE, error=str(e)))
+        return None
+
+def print_file(file_path):
+    """
+    Print file directly or convert to PDF first if needed.
+    Handles Office documents, images, PDFs, and text files.
+    """
+    file_ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    pdf_to_clean = None
+    
+    try:
+        # Check if file needs conversion through LibreOffice
+        if file_ext in LIBREOFFICE_FORMATS:
+            logger.info(get_translation("libreoffice_conversion_required", LANGUAGE, ext=file_ext))
+            temp_dir = tempfile.mkdtemp()
+            
+            try:
+                pdf_path = convert_with_libreoffice(file_path, temp_dir)
+                if not pdf_path:
+                    logger.error(get_translation("libreoffice_conversion_failed_cannot_print", LANGUAGE, path=file_path))
+                    return False
+                
+                # Print the converted PDF
+                pdf_to_clean = pdf_path
+                subprocess.run(["lp", "-d", PRINTER_NAME, pdf_path], check=True)
+                logger.info(get_translation("sent_to_printer", LANGUAGE, printer=PRINTER_NAME, path=pdf_path))
+                
+            finally:
+                # Clean up temporary directory and converted PDF
+                try:
+                    if pdf_to_clean and os.path.exists(pdf_to_clean):
+                        os.remove(pdf_to_clean)
+                    os.rmdir(temp_dir)
+                except Exception as e:
+                    logger.warning(get_translation("temp_cleanup_failed", LANGUAGE, error=str(e)))
+        else:
+            # Print directly for PDF, text, images, PostScript
+            subprocess.run(["lp", "-d", PRINTER_NAME, file_path], check=True)
+            logger.info(get_translation("sent_to_printer", LANGUAGE, printer=PRINTER_NAME, path=file_path))
+        
         return True
+        
     except subprocess.CalledProcessError as e:
         logger.error(get_translation("printing_failed", LANGUAGE, path=file_path, error=str(e)))
         return False
