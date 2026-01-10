@@ -88,12 +88,11 @@ def is_mostly_html_blank(html):
     cleaned = re.sub(r"<[^>]+>", "", html or "").strip()
     return cleaned == ""
 
-# File types that require conversion through LibreOffice before printing
+# File types that require conversion through LibreOffice Writer before printing
+# Only includes formats supported by libreoffice-writer (no calc/impress needed)
 LIBREOFFICE_FORMATS = {
     'doc', 'docx', 'odt', 'rtf',           # Word processors
-    'xls', 'xlsx', 'ods', 'csv',           # Spreadsheets
-    'ppt', 'pptx', 'odp',                  # Presentations
-    'html', 'htm'                           # HTML (better rendering)
+    'html', 'htm', 'txt'                    # HTML and plain text (better rendering)
 }
 
 def convert_with_libreoffice(input_path, output_dir):
