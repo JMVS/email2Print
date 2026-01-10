@@ -10,7 +10,6 @@ RUN apt-get update && \
         libmagic1 \
         cups-client \
         poppler-utils \
-        unoconv \
         libreoffice-core \
         libreoffice-writer \
         ffmpeg && \
